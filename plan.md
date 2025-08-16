@@ -4,7 +4,7 @@ Alright! Below are two text files, copy‑paste ready. Each is a **LLM‑oriente
 
 # File: `asyncinput_c_plan.txt`
 
-# asyncinput – C Implementation Plan
+# asyncinput – Implementation Plan and Roadmap (Updated 2025-08-16)
 
 ## LLM Instructions
 - You are implementing `libasyncinput` in **C**.
@@ -17,6 +17,14 @@ Alright! Below are two text files, copy‑paste ready. Each is a **LLM‑oriente
 - Keep API strictly minimal and ABI‑stable.  
 
 ---
+
+## Current State (MVP)
+- Language: C (Linux backend)
+- Threaded reader using epoll on /dev/input/event*
+- Callback and polling consumption models
+- Timestamps based on kernel input_event.time (converted to ns)
+- Public header exposes NI_* zero-cost constants mapping to evdev on Linux
+- Examples: read_keys, callback_demo, benchmark_asyncinput, mouse_demo, sdl3_asyncinput (SDL optional)
 
 ## Build System
 - Use **CMake**.
@@ -42,6 +50,8 @@ Alright! Below are two text files, copy‑paste ready. Each is a **LLM‑oriente
 ---
 
 ## Dependencies
+- Required: pthreads, Linux input headers
+- Optional: SDL3 (examples), libudev (hotplug in future), CMocka (tests)
 - Only system headers and syscalls: `<linux/input.h>`, `<linux/uinput.h>`.
 - Use `pthread` for threading.
 - Optional: `libudev` for hotplug detection (Linux).
@@ -50,6 +60,8 @@ Alright! Below are two text files, copy‑paste ready. Each is a **LLM‑oriente
 ---
 
 ## Public C API (`include/asyncinput.h`)
+- Zero-cost constants: NI_EV_*, NI_KEY_*, NI_BTN_*, NI_REL_*
+- Inline helpers: ni_is_key_event, ni_key_down, ni_is_rel_event, ni_button_down
 ```c
 typedef struct ni_event {
     int device_id;
@@ -81,6 +93,10 @@ int ni_shutdown(void);
 ---
 
 ## Testing and Benchmarking
+- Synthetic input via /dev/uinput for high-rate event generation
+- Latency measured from event.timestamp_ns to receive time
+- Examples print rolling stats at ~10 Hz
+- Add unit tests where possible (planned)
 - Use `/dev/uinput` to inject fake events (e.g. key press A).
 - Test both `ni_poll()` reporting and callback dispatch.
 - Log timestamps for latency verification.
@@ -89,6 +105,30 @@ int ni_shutdown(void);
 ---
 
 ## Deliverables
+- libasyncinput.so / .a
+- include/asyncinput.h
+- Examples built via CMake
+- README.md
+
+## Roadmap: Cross-platform and Features
+- Windows backend (Raw Input): map VK/mouse to NI_*; thread reads from message loop or raw input handle
+- macOS backend (IOHIDManager): translate HID usage pages to NI_*; CFRunLoop source to worker thread
+- Hotplug on Linux: libudev + epoll re-scan; gracefully handle device add/remove
+- Device filtering and metadata: API to enumerate devices, query caps, include name/vendor/product
+- Exclusive access/grab mode on Linux via EVIOCGRAB (opt-in)
+- ABS/Touch: NI_ABS_* constants, MT slots support, gestures (future)
+- Tests: automated latency tests using uinput, fuzzing of event decode paths
+
+## Task backlog
+- [x] Zero-cost NI_* constants and helpers
+- [x] Mouse support (REL axes, buttons)
+- [x] SDL3 example uses NI_* constants
+- [x] Benchmark example based on library API
+- [ ] Hotplug support on Linux (udev)
+- [ ] Device selection/filtering API
+- [ ] Windows backend prototype
+- [ ] macOS backend prototype
+- [ ] CI: build matrix, basic runtime smoke tests
 - `libasyncinput.so`, `libasyncinput.a`
 - Header: `asyncinput.h`
 - Example binaries in `examples/`
