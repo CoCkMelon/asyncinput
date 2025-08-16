@@ -1,0 +1,7 @@
+{
+	"InstallScripts" : 
+	[
+		"/home/melony/llmgen/asyncinput/build/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

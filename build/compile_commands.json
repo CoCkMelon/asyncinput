@@ -1,0 +1,26 @@
+[
+{
+  "directory": "/home/melony/llmgen/asyncinput/build",
+  "command": "/usr/bin/cc -Dasyncinput_shared_EXPORTS -I/home/melony/llmgen/asyncinput/include -O2 -g -DNDEBUG -std=gnu11 -fPIC -o CMakeFiles/asyncinput_shared.dir/src/libasyncinput.c.o -c /home/melony/llmgen/asyncinput/src/libasyncinput.c",
+  "file": "/home/melony/llmgen/asyncinput/src/libasyncinput.c",
+  "output": "CMakeFiles/asyncinput_shared.dir/src/libasyncinput.c.o"
+},
+{
+  "directory": "/home/melony/llmgen/asyncinput/build",
+  "command": "/usr/bin/cc  -I/home/melony/llmgen/asyncinput/include -O2 -g -DNDEBUG -std=gnu11 -o CMakeFiles/asyncinput_static.dir/src/libasyncinput.c.o -c /home/melony/llmgen/asyncinput/src/libasyncinput.c",
+  "file": "/home/melony/llmgen/asyncinput/src/libasyncinput.c",
+  "output": "CMakeFiles/asyncinput_static.dir/src/libasyncinput.c.o"
+},
+{
+  "directory": "/home/melony/llmgen/asyncinput/build",
+  "command": "/usr/bin/cc  -I/home/melony/llmgen/asyncinput/include -O2 -g -DNDEBUG -std=gnu11 -o CMakeFiles/read_keys.dir/examples/read_keys.c.o -c /home/melony/llmgen/asyncinput/examples/read_keys.c",
+  "file": "/home/melony/llmgen/asyncinput/examples/read_keys.c",
+  "output": "CMakeFiles/read_keys.dir/examples/read_keys.c.o"
+},
+{
+  "directory": "/home/melony/llmgen/asyncinput/build",
+  "command": "/usr/bin/cc  -I/home/melony/llmgen/asyncinput/include -O2 -g -DNDEBUG -std=gnu11 -o CMakeFiles/callback_demo.dir/examples/callback_demo.c.o -c /home/melony/llmgen/asyncinput/examples/callback_demo.c",
+  "file": "/home/melony/llmgen/asyncinput/examples/callback_demo.c",
+  "output": "CMakeFiles/callback_demo.dir/examples/callback_demo.c.o"
+}
+]
