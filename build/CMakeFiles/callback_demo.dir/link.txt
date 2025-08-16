@@ -1,1 +1,0 @@
-/usr/bin/cc -O2 -g -DNDEBUG -Wl,--dependency-file=CMakeFiles/callback_demo.dir/link.d CMakeFiles/callback_demo.dir/examples/callback_demo.c.o -o callback_demo  -Wl,-rpath,/home/melony/llmgen/asyncinput/build libasyncinput.so

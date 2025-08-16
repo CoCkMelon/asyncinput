@@ -1,1 +1,0 @@
-/usr/bin/cc -fPIC -O2 -g -DNDEBUG -Wl,--dependency-file=CMakeFiles/asyncinput_shared.dir/link.d -shared -Wl,-soname,libasyncinput.so -o libasyncinput.so CMakeFiles/asyncinput_shared.dir/src/libasyncinput.c.o

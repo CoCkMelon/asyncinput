@@ -1,2 +1,0 @@
-/usr/bin/ar qc libasyncinput.a CMakeFiles/asyncinput_static.dir/src/libasyncinput.c.o
-/usr/bin/ranlib libasyncinput.a

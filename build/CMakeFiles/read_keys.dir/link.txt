@@ -1,1 +1,0 @@
-/usr/bin/cc -O2 -g -DNDEBUG -Wl,--dependency-file=CMakeFiles/read_keys.dir/link.d CMakeFiles/read_keys.dir/examples/read_keys.c.o -o read_keys  -Wl,-rpath,/home/melony/llmgen/asyncinput/build libasyncinput.so
