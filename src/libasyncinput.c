@@ -37,6 +37,7 @@ struct ringbuf {
 static struct {
 	int initialized;
 	int epoll_fd;
+	int inotify_fd;
 	pthread_t thread;
 	volatile int stop;
 	struct device devices[MAX_DEVICES];
@@ -45,6 +46,8 @@ static struct {
 	struct ringbuf queue;
 	ni_callback cb;
 	void *cb_user;
+	ni_device_filter filter;
+	void *filter_user;
 } g;
 
 static long long
@@ -88,36 +91,96 @@ ring_pop_many(struct ringbuf *r, struct ni_event *out, int max)
 }
 
 static int
-open_device(const char *path)
+fill_device_info(int fd, const char *path, struct ni_device_info *out)
 {
+	if (!out) return -1;
+	memset(out, 0, sizeof(*out));
+	strncpy(out->path, path ? path : "", sizeof(out->path)-1);
+	struct input_id id = {0};
+	if (ioctl(fd, EVIOCGID, &id) == 0) {
+		out->bustype = id.bustype;
+		out->vendor = id.vendor;
+		out->product = id.product;
+		out->version = id.version;
+	}
+	char name[256] = {0};
+	if (ioctl(fd, EVIOCGNAME(sizeof(name)), name) >= 0) {
+		strncpy(out->name, name, sizeof(out->name)-1);
+	}
+	return 0;
+}
+
+static int
+open_device_filtered(const char *path, int *out_devid)
+{
+	int devid = -1;
+	/* deduce device id from path /dev/input/eventN */
+	const char *p = strrchr(path, 't');
+	if (p) {
+		int n = atoi(p+1);
+		if (n >= 0) devid = n;
+	}
 	int fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
 	if (fd < 0)
 		return -1;
-	/* optional: ioctl grab? left out for MVP */
+	if (g.filter) {
+		struct ni_device_info info = {0};
+		info.id = devid;
+		(void)fill_device_info(fd, path, &info);
+		if (!g.filter(&info, g.filter_user)) {
+			close(fd);
+			return -1;
+		}
+	}
+	if (out_devid) *out_devid = devid;
 	return fd;
 }
 
-static void
-scan_devices(void)
+static int has_device_id(int id) {
+	for (int i = 0; i < g.ndevi; i++) if (g.devices[i].id == id) return 1;
+	return 0;
+}
+
+static void add_device_fd(int fd, int devid, const char *path)
+{
+	struct epoll_event ev = {0};
+	ev.events = EPOLLIN;
+	ev.data.u32 = (uint32_t)devid;
+	epoll_ctl(g.epoll_fd, EPOLL_CTL_ADD, fd, &ev);
+	pthread_mutex_lock(&g.dev_lock);
+	g.devices[g.ndevi].fd = fd;
+	g.devices[g.ndevi].id = devid;
+	strncpy(g.devices[g.ndevi].path, path ? path : "", sizeof(g.devices[g.ndevi].path)-1);
+	g.ndevi++;
+	pthread_mutex_unlock(&g.dev_lock);
+}
+
+static void remove_device_by_id(int devid)
+{
+	pthread_mutex_lock(&g.dev_lock);
+	for (int i = 0; i < g.ndevi; i++) {
+		if (g.devices[i].id == devid) {
+			epoll_ctl(g.epoll_fd, EPOLL_CTL_DEL, g.devices[i].fd, NULL);
+			close(g.devices[i].fd);
+			/* compact array */
+			g.devices[i] = g.devices[g.ndevi-1];
+			g.ndevi--;
+			break;
+		}
+	}
+	pthread_mutex_unlock(&g.dev_lock);
+}
+
+static void scan_devices(void)
 {
 	char path[64];
 	for (int i = 0; i < MAX_DEVICES; i++) {
 		snprintf(path, sizeof(path), "/dev/input/event%d", i);
-		int fd = open_device(path);
-		if (fd < 0)
-			continue;
-
-		struct epoll_event ev = {0};
-		ev.events = EPOLLIN;
-		ev.data.u32 = (uint32_t)i;
-		epoll_ctl(g.epoll_fd, EPOLL_CTL_ADD, fd, &ev);
-
-		pthread_mutex_lock(&g.dev_lock);
-		g.devices[g.ndevi].fd = fd;
-		g.devices[g.ndevi].id = i;
-		strncpy(g.devices[g.ndevi].path, path, sizeof(g.devices[g.ndevi].path)-1);
-		g.ndevi++;
-		pthread_mutex_unlock(&g.dev_lock);
+		if (has_device_id(i)) continue;
+		int devid = -1;
+		int fd = open_device_filtered(path, &devid);
+		if (fd < 0) continue;
+		add_device_fd(fd, devid >= 0 ? devid : i, path);
 	}
 }
 
@@ -129,6 +192,42 @@ fd_to_device_id(int fd)
 			return g.devices[i].id;
 	}
 	return -1;
+}
+
+#include <sys/inotify.h>
+
+#define EPOLL_DATA_INOTIFY 0xFFFFFFFFu
+
+static void handle_inotify_event(void)
+{
+	char buf[4096] __attribute__((aligned(__alignof__(struct inotify_event))));
+	ssize_t len;
+	for (;;) {
+		len = read(g.inotify_fd, buf, sizeof(buf));
+		if (len <= 0) {
+			if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+			break;
+		}
+		ssize_t off = 0;
+		while (off < len) {
+			struct inotify_event *ie = (struct inotify_event*)(buf + off);
+			if ((ie->mask & IN_CREATE) && ie->len > 0) {
+				if (strncmp(ie->name, "event", 5) == 0) {
+					char path[128];
+					snprintf(path, sizeof(path), "/dev/input/%s", ie->name);
+					int devid = -1; int fd = open_device_filtered(path, &devid);
+					if (fd >= 0) add_device_fd(fd, devid, path);
+				}
+			}
+			if ((ie->mask & IN_DELETE) && ie->len > 0) {
+				if (strncmp(ie->name, "event", 5) == 0) {
+					int devid = atoi(ie->name + 5);
+					remove_device_by_id(devid);
+				}
+			}
+			off += sizeof(struct inotify_event) + ie->len;
+		}
+	}
 }
 
 static void *
@@ -143,8 +242,13 @@ worker(void *arg)
 		if (n <= 0)
 			continue;
 		for (int i = 0; i < n; i++) {
+			uint32_t tag = evs[i].data.u32;
+			if (tag == EPOLL_DATA_INOTIFY) {
+				handle_inotify_event();
+				continue;
+			}
 			/* find fd by id: epoll stores id in data.u32, map to fd */
-			int devid = (int)evs[i].data.u32;
+			int devid = (int)tag;
 			int fd = -1;
 			for (int j = 0; j < g.ndevi; j++) {
 				if (g.devices[j].id == devid) {
@@ -196,11 +300,48 @@ ni_init(int flags)
 	g.epoll_fd = epoll_create1(EPOLL_CLOEXEC);
 	if (g.epoll_fd < 0)
 		return -1;
+	/* inotify for hotplug */
+	g.inotify_fd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+	if (g.inotify_fd >= 0) {
+		inotify_add_watch(g.inotify_fd, "/dev/input", IN_CREATE | IN_DELETE);
+		struct epoll_event iev = {0};
+		iev.events = EPOLLIN;
+		iev.data.u32 = EPOLL_DATA_INOTIFY;
+		epoll_ctl(g.epoll_fd, EPOLL_CTL_ADD, g.inotify_fd, &iev);
+	}
 	scan_devices();
 	g.stop = 0;
 	if (pthread_create(&g.thread, NULL, worker, NULL) != 0)
 		return -1;
 	g.initialized = 1;
+	return 0;
+}
+
+int
+ni_set_device_filter(ni_device_filter filter, void *user_data)
+{
+	g.filter = filter;
+	g.filter_user = user_data;
+	if (!g.initialized) return 0;
+	/* Rescan: close devices that no longer match; try to open new matching ones */
+	/* Close non-matching */
+	pthread_mutex_lock(&g.dev_lock);
+	for (int i = g.ndevi - 1; i >= 0; i--) {
+		int fd = g.devices[i].fd;
+		struct ni_device_info info = {0};
+		fill_device_info(fd, g.devices[i].path, &info);
+		info.id = g.devices[i].id;
+		int keep = (g.filter ? g.filter(&info, g.filter_user) : 1);
+		if (!keep) {
+			epoll_ctl(g.epoll_fd, EPOLL_CTL_DEL, fd, NULL);
+			close(fd);
+			g.devices[i] = g.devices[g.ndevi-1];
+			g.ndevi--;
+		}
+	}
+	pthread_mutex_unlock(&g.dev_lock);
+	/* Try open any new devices that match */
+	scan_devices();
 	return 0;
 }
 
@@ -231,6 +372,7 @@ ni_shutdown(void)
 	pthread_join(g.thread, NULL);
 	for (int i = 0; i < g.ndevi; i++)
 		close(g.devices[i].fd);
+	if (g.inotify_fd >= 0) close(g.inotify_fd);
 	close(g.epoll_fd);
 	g.initialized = 0;
 	return 0;

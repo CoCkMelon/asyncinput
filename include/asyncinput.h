@@ -113,6 +113,25 @@ struct ni_event {
 	long long timestamp_ns; /* kernel/device-provided timestamp if available; otherwise CLOCK_MONOTONIC */
 };
 
+/* Device info for filtering */
+struct ni_device_info {
+    int id;                 /* library-assigned id (proposed) */
+    char path[128];         /* /dev/input/eventX */
+    unsigned short bustype; /* from EVIOCGID */
+    unsigned short vendor;  /* from EVIOCGID */
+    unsigned short product; /* from EVIOCGID */
+    unsigned short version; /* from EVIOCGID */
+    char name[256];         /* from EVIOCGNAME if available */
+};
+
+typedef int (*ni_device_filter)(const struct ni_device_info *info, void *user_data);
+
+/* Set a device filter; only matching devices will be opened.
+ * If called after ni_init, the library will rescan devices and close non-matching ones.
+ * Returns 0 on success.
+ */
+int ni_set_device_filter(ni_device_filter filter, void *user_data);
+
 /* Zero-cost inline helpers (compile away) */
 static inline int ni_is_key_event(const struct ni_event *ev) {
     return ev && ev->type == NI_EV_KEY;

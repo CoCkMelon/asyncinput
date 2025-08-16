@@ -64,6 +64,13 @@ if(ASYNCINPUT_BUILD_EXAMPLES)
         target_link_libraries(mouse_demo PRIVATE asyncinput_static Threads::Threads)
     endif()
 
+    add_executable(hotplug_mouse_wait examples/hotplug_mouse_wait.c)
+    if(ASYNCINPUT_BUILD_SHARED)
+        target_link_libraries(hotplug_mouse_wait PRIVATE asyncinput_shared Threads::Threads)
+    else()
+        target_link_libraries(hotplug_mouse_wait PRIVATE asyncinput_static Threads::Threads)
+    endif()
+
     # SDL3-based example (optional): sdl3_demo
     find_package(SDL3 QUIET)
     if(SDL3_FOUND)
