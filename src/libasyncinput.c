@@ -48,6 +48,7 @@ static struct {
 	void *cb_user;
 	ni_device_filter filter;
 	void *filter_user;
+	volatile long long rescan_until_ns;
 } g;
 
 static long long
@@ -211,12 +212,18 @@ static void handle_inotify_event(void)
 		ssize_t off = 0;
 		while (off < len) {
 			struct inotify_event *ie = (struct inotify_event*)(buf + off);
-			if ((ie->mask & IN_CREATE) && ie->len > 0) {
+			if (((ie->mask & IN_CREATE) || (ie->mask & IN_MOVED_TO)) && ie->len > 0) {
 				if (strncmp(ie->name, "event", 5) == 0) {
 					char path[128];
 					snprintf(path, sizeof(path), "/dev/input/%s", ie->name);
 					int devid = -1; int fd = open_device_filtered(path, &devid);
-					if (fd >= 0) add_device_fd(fd, devid, path);
+					if (fd >= 0) {
+						add_device_fd(fd, devid, path);
+					} else {
+						/* schedule rescans for a short time to tolerate udev races */
+						long long t = now_ns();
+						g.rescan_until_ns = t + 3000000000LL; /* 3s */
+					}
 				}
 			}
 			if ((ie->mask & IN_DELETE) && ie->len > 0) {
@@ -238,6 +245,11 @@ worker(void *arg)
 	struct input_event iev;
 
 	while (!g.stop) {
+		/* Opportunistically rescan while within rescan window (e.g., after IN_CREATE/MOVED_TO) */
+		long long tnow = now_ns();
+		if (g.rescan_until_ns && tnow < g.rescan_until_ns) {
+			scan_devices();
+		}
 		int n = epoll_wait(g.epoll_fd, evs, MAX_EPOLL_EVENTS, 50);
 		if (n <= 0)
 			continue;
@@ -303,7 +315,8 @@ ni_init(int flags)
 	/* inotify for hotplug */
 	g.inotify_fd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
 	if (g.inotify_fd >= 0) {
-		inotify_add_watch(g.inotify_fd, "/dev/input", IN_CREATE | IN_DELETE);
+		/* Also watch for IN_MOVED_TO because udev may create then rename nodes */
+		inotify_add_watch(g.inotify_fd, "/dev/input", IN_CREATE | IN_MOVED_TO | IN_DELETE);
 		struct epoll_event iev = {0};
 		iev.events = EPOLLIN;
 		iev.data.u32 = EPOLL_DATA_INOTIFY;
@@ -349,9 +362,9 @@ int
 ni_device_count(void)
 {
 	int n;
-	pthread_mutex_lock(6g.dev_lock);
+	pthread_mutex_lock(&g.dev_lock);
 	n = g.ndevi;
-	pthread_mutex_unlock(6g.dev_lock);
+	pthread_mutex_unlock(&g.dev_lock);
 	return n;
 }
 

@@ -14,6 +14,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <linux/input-event-codes.h>
+#include <linux/input.h>
 #include <sys/ioctl.h>
 #include <fcntl.h>
 
@@ -26,22 +27,41 @@ static _Atomic int g_dx = 0;
 static _Atomic int g_dy = 0;
 static _Atomic unsigned g_buttons = 0;
 
+static inline int test_bit(int bit, const unsigned long *array, size_t size_bytes) {
+    size_t idx = (unsigned)bit / (8 * sizeof(unsigned long));
+    size_t off = (unsigned)bit % (8 * sizeof(unsigned long));
+    if (idx >= (size_bytes / sizeof(unsigned long))) return 0;
+    return (array[idx] >> off) & 1UL;
+}
+
 static int is_mouse_like(const struct ni_device_info *info, void *ud) {
     (void)ud;
-    // Simple heuristic: accept devices whose name contains "mouse" (case-insensitive)
-    // or USB bustype and typical vendor/product non-zero.
     if (!info) return 0;
-    for (const char *p = info->name; p && *p; ++p) {
-        char c = *p;
-        if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
-        // naive substring check for "mouse"
-        static const char *m = "mouse";
-        int i = 0; const char *q = p;
-        while (q[i] && m[i] && ((q[i] >= 'A' && q[i] <= 'Z') ? (q[i]-'A'+'a') : q[i]) == m[i]) i++;
-        if (m[i] == '\0') return 1;
-    }
-    // fallback: accept all, actual button/rel filtering will occur in event stream
-    return 1;
+    // Inspect device capabilities directly to detect a real mouse-like evdev node.
+    // Criteria: supports EV_REL with REL_X or REL_Y, and has at least one mouse button.
+    int fd = open(info->path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+    if (fd < 0) return 0;
+
+    unsigned long evbits[8] = {0};
+    unsigned long relbits[8] = {0};
+    unsigned long keybits[64] = {0};
+
+    // Query supported event types and codes.
+    ioctl(fd, EVIOCGBIT(0, sizeof(evbits)), evbits);
+    if (!test_bit(EV_REL, evbits, sizeof(evbits))) { close(fd); return 0; }
+
+    ioctl(fd, EVIOCGBIT(EV_REL, sizeof(relbits)), relbits);
+    int has_rel = test_bit(REL_X, relbits, sizeof(relbits)) || test_bit(REL_Y, relbits, sizeof(relbits));
+
+    ioctl(fd, EVIOCGBIT(EV_KEY, sizeof(keybits)), keybits);
+    int has_btn = test_bit(BTN_LEFT, keybits, sizeof(keybits)) ||
+                  test_bit(BTN_RIGHT, keybits, sizeof(keybits)) ||
+                  test_bit(BTN_MIDDLE, keybits, sizeof(keybits)) ||
+                  test_bit(BTN_SIDE, keybits, sizeof(keybits)) ||
+                  test_bit(BTN_EXTRA, keybits, sizeof(keybits));
+
+    close(fd);
+    return has_rel && has_btn;
 }
 
 static void on_ev(const struct ni_event *ev, void *ud) {
