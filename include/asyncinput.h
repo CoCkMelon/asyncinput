@@ -132,6 +132,9 @@ typedef int (*ni_device_filter)(const struct ni_device_info *info, void *user_da
  */
 int ni_set_device_filter(ni_device_filter filter, void *user_data);
 
+/* Return number of currently opened devices that passed the filter */
+int ni_device_count(void);
+
 /* Zero-cost inline helpers (compile away) */
 static inline int ni_is_key_event(const struct ni_event *ev) {
     return ev && ev->type == NI_EV_KEY;

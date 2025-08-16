@@ -87,7 +87,20 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    fprintf(stdout, "Waiting for mouse input... move or click once device is connected.\n");
+    fprintf(stdout, "Waiting for mouse device (hotplug)...\n");
+
+    // Wait until at least one device is opened (filter will accept mouse-like)
+    long long t0 = now_ns();
+    while (ni_device_count() == 0 && (now_ns() - t0) < (long long)seconds * 1000000000LL) {
+        usleep(20000);
+    }
+    if (ni_device_count() == 0) {
+        fprintf(stderr, "No matching device connected within timeout.\n");
+        ni_shutdown();
+        return 2;
+    }
+
+    fprintf(stdout, "Mouse connected. Handling input...\n");
 
     long long start = now_ns();
     long long next = start;

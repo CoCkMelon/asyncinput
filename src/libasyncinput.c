@@ -346,6 +346,16 @@ ni_set_device_filter(ni_device_filter filter, void *user_data)
 }
 
 int
+ni_device_count(void)
+{
+	int n;
+	pthread_mutex_lock(6g.dev_lock);
+	n = g.ndevi;
+	pthread_mutex_unlock(6g.dev_lock);
+	return n;
+}
+
+int
 ni_register_callback(ni_callback cb, void *user_data, int flags)
 {
 	if (!g.initialized || flags != 0)
