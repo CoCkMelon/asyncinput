@@ -1,0 +1,37 @@
+# C/CMake build outputs
+build/
+
+# CMake local files (usually inside build/, but just in case)
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# Compilation artifacts
+*.o
+*.a
+*.so
+*.so.*
+*.d
+*.obj
+*.dll
+*.lib
+*.exe
+
+# Generated compilation database (sometimes generated at repo root)
+compile_commands.json
+
+# Clangd/clang caches
+.cache/
+.clangd/
+
+# Editors/OS noise
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Example binaries that may be produced
+examples/benchmark_c
+
