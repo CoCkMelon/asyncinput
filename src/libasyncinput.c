@@ -49,6 +49,10 @@ static struct {
 	ni_device_filter filter;
 	void *filter_user;
 	volatile long long rescan_until_ns;
+	/* optional /dev/input/mice reader */
+	int mice_enabled;
+	int mice_fd;
+	pthread_t mice_thread;
 } g;
 
 static long long
@@ -90,6 +94,57 @@ ring_pop_many(struct ringbuf *r, struct ni_event *out, int max)
 	pthread_mutex_unlock(&r->lock);
 	return n;
 }
+
+static inline void emit_or_queue(struct ni_event *ev)
+{
+	if (g.cb) g.cb(ev, g.cb_user); else ring_push(&g.queue, ev);
+}
+
+#ifdef __linux__
+static void *mice_worker(void *arg)
+{
+	(void)arg;
+	if (g.mice_fd < 0) {
+		g.mice_fd = open("/dev/input/mice", O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+		if (g.mice_fd < 0) return NULL;
+	}
+	unsigned char buf[8];
+	unsigned char pkt[4];
+	int have = 0;
+	while (!g.stop && g.mice_enabled) {
+		ssize_t r = read(g.mice_fd, buf, sizeof(buf));
+		if (r <= 0) {
+			if (errno == EAGAIN || errno == EWOULDBLOCK) { usleep(1000); continue; }
+			break;
+		}
+		for (ssize_t i = 0; i < r; i++) {
+			pkt[have++] = buf[i];
+			if (have >= 3) {
+				int btn = pkt[0];
+				signed char dx = (signed char)pkt[1];
+				signed char dy = (signed char)pkt[2];
+				struct ni_event ev = {0};
+				ev.device_id = -2; /* pseudo mice id */
+				ev.timestamp_ns = now_ns();
+				/* buttons */
+				ev.type = NI_EV_KEY; ev.code = NI_BTN_LEFT; ev.value = (btn & 0x1) ? 1 : 0; emit_or_queue(&ev);
+				ev.code = NI_BTN_RIGHT; ev.value = (btn & 0x2) ? 1 : 0; emit_or_queue(&ev);
+				ev.code = NI_BTN_MIDDLE; ev.value = (btn & 0x4) ? 1 : 0; emit_or_queue(&ev);
+				/* rel moves: dy inverted to match evdev coords */
+				ev.type = NI_EV_REL; ev.code = NI_REL_X; ev.value = (int)dx; emit_or_queue(&ev);
+				ev.type = NI_EV_REL; ev.code = NI_REL_Y; ev.value = -(int)dy; emit_or_queue(&ev);
+				if (have >= 4) {
+					signed char dz = (signed char)pkt[3];
+					ev.type = NI_EV_REL; ev.code = NI_REL_WHEEL; ev.value = (int)dz; emit_or_queue(&ev);
+				}
+				have = 0;
+			}
+		}
+	}
+	if (g.mice_fd >= 0) { close(g.mice_fd); g.mice_fd = -1; }
+	return NULL;
+}
+#endif
 
 static int
 fill_device_info(int fd, const char *path, struct ni_device_info *out)
@@ -144,16 +199,19 @@ static int has_device_id(int id) {
 
 static void add_device_fd(int fd, int devid, const char *path)
 {
-	struct epoll_event ev = {0};
-	ev.events = EPOLLIN;
-	ev.data.u32 = (uint32_t)devid;
-	epoll_ctl(g.epoll_fd, EPOLL_CTL_ADD, fd, &ev);
 	pthread_mutex_lock(&g.dev_lock);
-	g.devices[g.ndevi].fd = fd;
-	g.devices[g.ndevi].id = devid;
-	strncpy(g.devices[g.ndevi].path, path ? path : "", sizeof(g.devices[g.ndevi].path)-1);
+	struct device *dev = &g.devices[g.ndevi];
+	dev->fd = fd;
+	dev->id = devid;
+	strncpy(dev->path, path ? path : "", sizeof(dev->path)-1);
 	g.ndevi++;
 	pthread_mutex_unlock(&g.dev_lock);
+	
+	/* Use device pointer directly in epoll to eliminate lookup */
+	struct epoll_event ev = {0};
+	ev.events = EPOLLIN;
+	ev.data.ptr = dev;  /* Direct pointer instead of device_id */
+	epoll_ctl(g.epoll_fd, EPOLL_CTL_ADD, fd, &ev);
 }
 
 static void remove_device_by_id(int devid)
@@ -254,22 +312,17 @@ worker(void *arg)
 		if (n <= 0)
 			continue;
 		for (int i = 0; i < n; i++) {
-			uint32_t tag = evs[i].data.u32;
-			if (tag == EPOLL_DATA_INOTIFY) {
+			/* Check for inotify events using special pointer value */
+			if (evs[i].data.ptr == (void*)EPOLL_DATA_INOTIFY) {
 				handle_inotify_event();
 				continue;
 			}
-			/* find fd by id: epoll stores id in data.u32, map to fd */
-			int devid = (int)tag;
-			int fd = -1;
-			for (int j = 0; j < g.ndevi; j++) {
-				if (g.devices[j].id == devid) {
-					fd = g.devices[j].fd;
-					break;
-				}
-			}
-			if (fd < 0)
+			/* Direct device pointer from epoll - no lookup needed! */
+			struct device *dev = (struct device*)evs[i].data.ptr;
+			if (!dev)
 				continue;
+			int fd = dev->fd;
+			int devid = dev->id;
 			for (;;) {
 				ssize_t r = read(fd, &iev, sizeof(iev));
 				if (r < 0) {
@@ -310,6 +363,7 @@ ni_init(int flags)
 	ring_init(&g.queue);
 	pthread_mutex_init(&g.dev_lock, NULL);
 	g.epoll_fd = epoll_create1(EPOLL_CLOEXEC);
+	g.mice_fd = -1;
 	if (g.epoll_fd < 0)
 		return -1;
 	/* inotify for hotplug */
@@ -319,13 +373,20 @@ ni_init(int flags)
 		inotify_add_watch(g.inotify_fd, "/dev/input", IN_CREATE | IN_MOVED_TO | IN_DELETE);
 		struct epoll_event iev = {0};
 		iev.events = EPOLLIN;
-		iev.data.u32 = EPOLL_DATA_INOTIFY;
+		iev.data.ptr = (void*)EPOLL_DATA_INOTIFY;  /* Use pointer for consistency */
 		epoll_ctl(g.epoll_fd, EPOLL_CTL_ADD, g.inotify_fd, &iev);
 	}
 	scan_devices();
 	g.stop = 0;
 	if (pthread_create(&g.thread, NULL, worker, NULL) != 0)
 		return -1;
+#ifdef __linux__
+	if (g.mice_enabled) {
+		if (pthread_create(&g.mice_thread, NULL, mice_worker, NULL) != 0) {
+			g.mice_enabled = 0; /* non-fatal */
+		}
+	}
+#endif
 	g.initialized = 1;
 	return 0;
 }
@@ -392,6 +453,10 @@ ni_shutdown(void)
 	if (!g.initialized)
 		return 0;
 	g.stop = 1;
+#ifdef __linux__
+	g.mice_enabled = 0;
+	if (g.mice_thread) pthread_join(g.mice_thread, NULL);
+#endif
 	pthread_join(g.thread, NULL);
 	for (int i = 0; i < g.ndevi; i++)
 		close(g.devices[i].fd);
@@ -399,5 +464,25 @@ ni_shutdown(void)
 	close(g.epoll_fd);
 	g.initialized = 0;
 	return 0;
+}
+
+int ni_enable_mice(int enabled)
+{
+#ifdef __linux__
+	g.mice_enabled = enabled ? 1 : 0;
+	if (!g.initialized) return 0;
+	if (enabled) {
+		if (!g.mice_thread) {
+			if (pthread_create(&g.mice_thread, NULL, mice_worker, NULL) != 0) {
+				g.mice_enabled = 0;
+				return -1;
+			}
+		}
+	}
+	return 0;
+#else
+	(void)enabled;
+	return -1;
+#endif
 }
 

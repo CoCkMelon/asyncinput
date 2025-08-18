@@ -42,6 +42,7 @@ static SDL_Renderer *renderer = NULL;
 // bits: 0=W, 1=A, 2=S, 3=D
 static _Atomic uint32_t g_keymask = 0;
 static _Atomic bool g_should_quit = false;
+static _Atomic long long g_last_input_ns = 0; // updated on input; used to idle-quit
 
 static inline void set_bit(_Atomic uint32_t *mask, uint32_t bit, bool down) {
     uint32_t m = atomic_load(mask);
@@ -81,6 +82,8 @@ static void on_input(const struct ni_event *ev, void *ud) {
     (void)ud;
     if (ev->type == NI_EV_KEY) {
         bool down = (ev->value != 0);
+        // update idle timer on any key activity
+        atomic_store(&g_last_input_ns, now_ns());
 
         // Track gameplay keys
         switch (ev->code) {
@@ -142,6 +145,7 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
     st->y = 300.0f;
     st->speed_px_s = 300.0f; // move speed
     st->last_ns = now_ns();
+    atomic_store(&g_last_input_ns, st->last_ns);
 
     if (ni_init(0) != 0) {
         SDL_Log("ni_init failed (permissions for /dev/input/event*?)");
@@ -165,8 +169,11 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
     if (event->type == SDL_EVENT_QUIT) {
         return SDL_APP_SUCCESS;
     }
+    // No low-latency input needed for this, so it can be here as well.
     if (event->type == SDL_EVENT_KEY_DOWN) {
-        // Also allow quitting via SDL keyboard (works under windowed backends)
+        // Any keyboard activity resets idle timer
+        atomic_store(&g_last_input_ns, now_ns());
+        // Also allow quitting via SDL keyboard
         SDL_KeyboardEvent *ke = (SDL_KeyboardEvent*)event;
         if (ke) {
             SDL_Scancode sc = ke->scancode;
@@ -187,6 +194,13 @@ SDL_AppResult SDL_AppIterate(void *appstate) {
     }
 
     long long t = now_ns();
+
+    // Exit if idle for 10 seconds
+    long long last_in = atomic_load(&g_last_input_ns);
+    if (last_in != 0 && (t - last_in) >= 10000000000LL) {
+        return SDL_APP_SUCCESS;
+    }
+
     double dt = (double)(t - st->last_ns) / 1e9;
     if (dt > 0.1) dt = 0.1; // clamp to avoid big jumps on hiccups
     st->last_ns = t;
