@@ -1,5 +1,8 @@
 // Agent: Agent Mode, Date: 2025-08-16, Observation: Initial linux MVP implementation, worker thread reads /dev/input/event* with epoll, ring buffer for polling
 #include "asyncinput.h"
+#if defined(__linux__) && defined(ASYNCINPUT_HAVE_XKBCOMMON)
+#include <xkbcommon/xkbcommon.h>
+#endif
 
 #include <errno.h>
 #include <fcntl.h>
@@ -34,6 +37,13 @@ struct ringbuf {
 	pthread_mutex_t lock;
 };
 
+struct keyringbuf {
+	struct ni_key_event ev[RING_SIZE];
+	int head;
+	int tail;
+	pthread_mutex_t lock;
+};
+
 static struct {
 	int initialized;
 	int epoll_fd;
@@ -53,6 +63,21 @@ static struct {
 	int mice_enabled;
 	int mice_fd;
 	pthread_t mice_thread;
+	/* xkb layer */
+	int xkb_enabled;
+#if defined(__linux__) && defined(ASYNCINPUT_HAVE_XKBCOMMON)
+	struct xkb_context *xkb_ctx;
+	struct xkb_keymap *xkb_keymap;
+	struct xkb_state *xkb_state;
+	char xkb_rules[32];
+	char xkb_model[32];
+	char xkb_layout[64];
+	char xkb_variant[32];
+	char xkb_options[128];
+#endif
+	struct keyringbuf key_queue;
+	ni_key_callback key_cb;
+	void *key_cb_user;
 } g;
 
 static long long
@@ -98,6 +123,35 @@ ring_pop_many(struct ringbuf *r, struct ni_event *out, int max)
 static inline void emit_or_queue(struct ni_event *ev)
 {
 	if (g.cb) g.cb(ev, g.cb_user); else ring_push(&g.queue, ev);
+}
+
+static void keyring_init(struct keyringbuf *r)
+{
+	memset(r, 0, sizeof(*r));
+	pthread_mutex_init(&r->lock, NULL);
+}
+
+static void keyring_push(struct keyringbuf *r, const struct ni_key_event *ev)
+{
+	pthread_mutex_lock(&r->lock);
+	int next = (r->head + 1) % RING_SIZE;
+	if (next != r->tail) {
+		r->ev[r->head] = *ev;
+		r->head = next;
+	}
+	pthread_mutex_unlock(&r->lock);
+}
+
+static int keyring_pop_many(struct keyringbuf *r, struct ni_key_event *out, int max)
+{
+	int n = 0;
+	pthread_mutex_lock(&r->lock);
+	while (n < max && r->tail != r->head) {
+		out[n++] = r->ev[r->tail];
+		r->tail = (r->tail + 1) % RING_SIZE;
+	}
+	pthread_mutex_unlock(&r->lock);
+	return n;
 }
 
 #ifdef __linux__
@@ -295,6 +349,50 @@ static void handle_inotify_event(void)
 	}
 }
 
+static inline uint32_t mods_mask_from_state(void)
+{
+	uint32_t m = 0;
+#if defined(__linux__) && defined(ASYNCINPUT_HAVE_XKBCOMMON)
+	if (g.xkb_state) {
+if (xkb_state_mod_name_is_active(g.xkb_state, XKB_MOD_NAME_SHIFT, XKB_STATE_MODS_EFFECTIVE)) m |= 1u << 0;
+if (xkb_state_mod_name_is_active(g.xkb_state, XKB_MOD_NAME_CTRL, XKB_STATE_MODS_EFFECTIVE)) m |= 1u << 1;
+if (xkb_state_mod_name_is_active(g.xkb_state, XKB_MOD_NAME_ALT, XKB_STATE_MODS_EFFECTIVE)) m |= 1u << 2;
+if (xkb_state_mod_name_is_active(g.xkb_state, XKB_MOD_NAME_LOGO, XKB_STATE_MODS_EFFECTIVE)) m |= 1u << 3;
+	}
+#endif
+	return m;
+}
+
+static inline void maybe_emit_key_event(const struct ni_event *base)
+{
+	if (!g.xkb_enabled) return;
+#if defined(__linux__) && defined(ASYNCINPUT_HAVE_XKBCOMMON)
+if (base->type != NI_EV_KEY) return;
+	/* Evdev to XKB keycode conversion */
+uint32_t xkb_code = (uint32_t)base->code + 8u;
+	if (g.xkb_state) {
+xkb_state_update_key(g.xkb_state, xkb_code, base->value ? XKB_KEY_DOWN : XKB_KEY_UP);
+		struct ni_key_event kev = {0};
+kev.device_id = base->device_id;
+kev.timestamp_ns = base->timestamp_ns;
+kev.down = base->value ? 1 : 0;
+		kev.mods = mods_mask_from_state();
+		/* Keysym for this key */
+		xkb_keysym_t sym = xkb_state_key_get_one_sym(g.xkb_state, xkb_code);
+		kev.keysym = (uint32_t)sym;
+		kev.text[0] = '\0';
+		if (kev.down) {
+			/* Get UTF-8 text (if any) */
+			int n = xkb_state_key_get_utf8(g.xkb_state, xkb_code, kev.text, (int)sizeof(kev.text));
+			(void)n; /* n  0 on error; zero means no text */
+		}
+if (g.key_cb) g.key_cb(&kev, g.key_cb_user); else keyring_push(&g.key_queue, &kev);
+	}
+#else
+	(void)base;
+#endif
+}
+
 static void *
 worker(void *arg)
 {
@@ -346,6 +444,8 @@ worker(void *arg)
 					g.cb(&ev, g.cb_user);
 				else
 					ring_push(&g.queue, &ev);
+				/* Generate high-level key events if xkb is enabled */
+				maybe_emit_key_event(&ev);
 			}
 		}
 	}
@@ -361,6 +461,7 @@ ni_init(int flags)
 		return 0;
 	memset(&g, 0, sizeof(g));
 	ring_init(&g.queue);
+	keyring_init(&g.key_queue);
 	pthread_mutex_init(&g.dev_lock, NULL);
 	g.epoll_fd = epoll_create1(EPOLL_CLOEXEC);
 	g.mice_fd = -1;
@@ -378,6 +479,13 @@ ni_init(int flags)
 	}
 	scan_devices();
 	g.stop = 0;
+#if defined(__linux__) && defined(ASYNCINPUT_HAVE_XKBCOMMON)
+	/* Default xkb names if not set */
+	if (!g.xkb_rules[0]) snprintf(g.xkb_rules, sizeof(g.xkb_rules), "evdev");
+	if (!g.xkb_model[0]) snprintf(g.xkb_model, sizeof(g.xkb_model), "pc105");
+	if (!g.xkb_layout[0]) snprintf(g.xkb_layout, sizeof(g.xkb_layout), "us");
+	/* xkb will be created on ni_enable_xkb(1) */
+#endif
 	if (pthread_create(&g.thread, NULL, worker, NULL) != 0)
 		return -1;
 #ifdef __linux__
@@ -464,6 +572,79 @@ ni_shutdown(void)
 	close(g.epoll_fd);
 	g.initialized = 0;
 	return 0;
+}
+
+int ni_register_key_callback(ni_key_callback cb, void *user_data, int flags)
+{
+	(void)flags;
+	if (!g.initialized) return -1;
+	g.key_cb = cb;
+	g.key_cb_user = user_data;
+	return 0;
+}
+
+int ni_poll_key_events(struct ni_key_event *evts, int max_events)
+{
+	if (!g.initialized || !evts || max_events <= 0) return -1;
+	return keyring_pop_many(&g.key_queue, evts, max_events);
+}
+
+static int rebuild_xkb_keymap(void)
+{
+#if defined(__linux__) && defined(ASYNCINPUT_HAVE_XKBCOMMON)
+	if (!g.xkb_enabled) return 0;
+	if (!g.xkb_ctx) g.xkb_ctx = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
+	if (!g.xkb_ctx) return -1;
+	struct xkb_rule_names rmlvo = {0};
+	rmlvo.rules = g.xkb_rules[0] ? g.xkb_rules : NULL;
+	rmlvo.model = g.xkb_model[0] ? g.xkb_model : NULL;
+	rmlvo.layout = g.xkb_layout[0] ? g.xkb_layout : NULL;
+	rmlvo.variant = g.xkb_variant[0] ? g.xkb_variant : NULL;
+	rmlvo.options = g.xkb_options[0] ? g.xkb_options : NULL;
+struct xkb_keymap *km = xkb_keymap_new_from_names(g.xkb_ctx, &rmlvo, XKB_KEYMAP_COMPILE_NO_FLAGS);
+	if (!km) return -1;
+	struct xkb_state *st = xkb_state_new(km);
+	if (!st) { xkb_keymap_unref(km); return -1; }
+	if (g.xkb_state) xkb_state_unref(g.xkb_state);
+	if (g.xkb_keymap) xkb_keymap_unref(g.xkb_keymap);
+	g.xkb_keymap = km;
+	g.xkb_state = st;
+	return 0;
+#else
+	return -1;
+#endif
+}
+
+int ni_enable_xkb(int enabled)
+{
+	g.xkb_enabled = enabled ? 1 : 0;
+#if defined(__linux__) && defined(ASYNCINPUT_HAVE_XKBCOMMON)
+	if (g.xkb_enabled) return rebuild_xkb_keymap();
+	/* disabling: free state */
+	if (g.xkb_state) { xkb_state_unref(g.xkb_state); g.xkb_state = NULL; }
+	if (g.xkb_keymap) { xkb_keymap_unref(g.xkb_keymap); g.xkb_keymap = NULL; }
+	if (g.xkb_ctx) { xkb_context_unref(g.xkb_ctx); g.xkb_ctx = NULL; }
+	return 0;
+#else
+	return -1;
+#endif
+}
+
+int ni_set_xkb_names(const char *rules, const char *model, const char *layout,
+                     const char *variant, const char *options)
+{
+#if defined(__linux__) && defined(ASYNCINPUT_HAVE_XKBCOMMON)
+	if (rules) { snprintf(g.xkb_rules, sizeof(g.xkb_rules), "%s", rules); }
+	if (model) { snprintf(g.xkb_model, sizeof(g.xkb_model), "%s", model); }
+	if (layout) { snprintf(g.xkb_layout, sizeof(g.xkb_layout), "%s", layout); }
+	if (variant) { snprintf(g.xkb_variant, sizeof(g.xkb_variant), "%s", variant); }
+	if (options) { snprintf(g.xkb_options, sizeof(g.xkb_options), "%s", options); }
+	if (g.xkb_enabled) return rebuild_xkb_keymap();
+	return 0;
+#else
+	(void)rules; (void)model; (void)layout; (void)variant; (void)options;
+	return -1;
+#endif
 }
 
 int ni_enable_mice(int enabled)

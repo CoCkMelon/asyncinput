@@ -21,16 +21,26 @@ set(ASYNCINPUT_SRC
 
 # Libraries
 find_package(Threads REQUIRED)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(XKBCOMMON QUIET IMPORTED_TARGET xkbcommon)
 
 if(ASYNCINPUT_BUILD_SHARED)
     add_library(asyncinput_shared SHARED ${ASYNCINPUT_SRC})
     target_link_libraries(asyncinput_shared PRIVATE Threads::Threads)
+    if (XKBCOMMON_FOUND)
+        target_link_libraries(asyncinput_shared PRIVATE PkgConfig::XKBCOMMON)
+        target_compile_definitions(asyncinput_shared PRIVATE ASYNCINPUT_HAVE_XKBCOMMON=1)
+    endif()
     set_target_properties(asyncinput_shared PROPERTIES OUTPUT_NAME asyncinput)
 endif()
 
 if(ASYNCINPUT_BUILD_STATIC)
     add_library(asyncinput_static STATIC ${ASYNCINPUT_SRC})
     target_link_libraries(asyncinput_static PRIVATE Threads::Threads)
+    if (XKBCOMMON_FOUND)
+        target_link_libraries(asyncinput_static PRIVATE PkgConfig::XKBCOMMON)
+        target_compile_definitions(asyncinput_static PRIVATE ASYNCINPUT_HAVE_XKBCOMMON=1)
+    endif()
     set_target_properties(asyncinput_static PROPERTIES OUTPUT_NAME asyncinput)
 endif()
 

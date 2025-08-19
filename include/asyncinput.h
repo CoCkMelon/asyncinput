@@ -3,6 +3,7 @@
 #define ASYNCINPUT_H
 
 #include <stdint.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -892,6 +893,25 @@ static inline int ni_button_down(const struct ni_event *ev) {
 typedef void (*ni_callback)(const struct ni_event *ev, void *user_data);
 typedef void (*ni_device_callback)(const struct ni_event *ev, const struct ni_device_info *device, void *user_data);
 
+/* High-level key event produced by the optional xkb layer. Mirrors SDL-style input. */
+struct ni_key_event {
+    int device_id;              /* originating device */
+    uint32_t keysym;            /* xkb keysym (XKB_KEY_*), 0 if none */
+    char text[64];              /* UTF-8 text for this key press (if any), NUL-terminated */
+    int down;                   /* 1 on key press, 0 on release */
+    uint32_t mods;              /* bitmask of active modifiers (see NI_KMOD_*) */
+    long long timestamp_ns;     /* timestamp of underlying kernel event */
+};
+
+enum {
+    NI_KMOD_SHIFT = 1u << 0,
+    NI_KMOD_CTRL  = 1u << 1,
+    NI_KMOD_ALT   = 1u << 2,
+    NI_KMOD_SUPER = 1u << 3,
+};
+
+typedef void (*ni_key_callback)(const struct ni_key_event *kev, void *user_data);
+
 /* Device-specific callback registration flags */
 #define NI_CB_FLAG_EXCLUSIVE    0x01  /* Only this callback for this device */
 #define NI_CB_FLAG_HIGH_PRIORITY 0x02  /* Process before global callbacks */
@@ -923,6 +943,23 @@ ni_enable_mice(int enabled);
 /* Register a callback invoked from worker thread. flags reserved (0). */
 int
 ni_register_callback(ni_callback cb, void *user_data, int flags);
+
+/* Optional xkb layer control (Linux/evdev-focused). When enabled, the library
+ * will translate EV_KEY events to xkb keysyms and UTF-8 text and expose them
+ * via a separate callback/queue API below. Defaults to disabled. Returns 0 on success.
+ */
+int ni_enable_xkb(int enabled);
+
+/* Configure the xkb keymap using RMLVO names. Any argument may be NULL to use
+ * the default. Call before ni_enable_xkb(1) or anytime to rebuild the keymap. */
+int ni_set_xkb_names(const char *rules, const char *model, const char *layout,
+                     const char *variant, const char *options);
+
+/* Register a high-level key callback. Mutually independent from the low-level callback. */
+int ni_register_key_callback(ni_key_callback cb, void *user_data, int flags);
+
+/* Poll high-level key events. Returns count. */
+int ni_poll_key_events(struct ni_key_event *evts, int max_events);
 
 /* Poll queued events into evts (main-thread consumption). Returns count. */
 int
