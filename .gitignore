@@ -1,5 +1,6 @@
 # C/CMake build outputs
 build/
+build*
 
 # CMake local files (usually inside build/, but just in case)
 CMakeFiles/
