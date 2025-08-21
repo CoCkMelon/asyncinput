@@ -8,16 +8,22 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 # Options
 option(ASYNCINPUT_BUILD_SHARED "Build shared library" ON)
 option(ASYNCINPUT_BUILD_STATIC "Build static library" ON)
-option(ASYNCINPUT_BUILD_EXAMPLES "Build example programs" ON)
+option(ASYNCINPUT_BUILD_EXAMPLES "Build example programs" OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Include dirs
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 
-# Sources
-set(ASYNCINPUT_SRC
-    src/libasyncinput.c
-)
+# Select backend sources per-platform
+if(WIN32)
+    set(ASYNCINPUT_SRC src/libasyncinput_win.c)
+elif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(ASYNCINPUT_SRC src/libasyncinput_posix.c)
+else()
+    # Unsupported platforms: require SDL3 and use SDL-based backend. Fail to configure if missing.
+    find_package(SDL3 REQUIRED)
+    set(ASYNCINPUT_SRC src/libasyncinput_stub.c)
+endif()
 
 # Libraries
 find_package(Threads REQUIRED)
@@ -31,6 +37,10 @@ if(ASYNCINPUT_BUILD_SHARED)
         target_link_libraries(asyncinput_shared PRIVATE PkgConfig::XKBCOMMON)
         target_compile_definitions(asyncinput_shared PRIVATE ASYNCINPUT_HAVE_XKBCOMMON=1)
     endif()
+    if(NOT (WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux"))
+        target_link_libraries(asyncinput_shared PRIVATE SDL3::SDL3)
+        target_compile_definitions(asyncinput_shared PRIVATE ASYNCINPUT_STUB_SDL=1)
+    endif()
     set_target_properties(asyncinput_shared PROPERTIES OUTPUT_NAME asyncinput)
 endif()
 
@@ -40,6 +50,10 @@ if(ASYNCINPUT_BUILD_STATIC)
     if (XKBCOMMON_FOUND)
         target_link_libraries(asyncinput_static PRIVATE PkgConfig::XKBCOMMON)
         target_compile_definitions(asyncinput_static PRIVATE ASYNCINPUT_HAVE_XKBCOMMON=1)
+    endif()
+    if(NOT (WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux"))
+        target_link_libraries(asyncinput_static PRIVATE SDL3::SDL3)
+        target_compile_definitions(asyncinput_static PRIVATE ASYNCINPUT_STUB_SDL=1)
     endif()
     set_target_properties(asyncinput_static PROPERTIES OUTPUT_NAME asyncinput)
 endif()
