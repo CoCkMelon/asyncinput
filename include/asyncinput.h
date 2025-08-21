@@ -841,6 +841,19 @@ extern "C" {
 #  define NI_BTN_SIDE     0x113
 #  define NI_BTN_EXTRA    0x114
 #endif
+/* Legacy compatibility: some downstream projects expect a synthetic NI_EV_MOUSE type
+ * with NI_MOUSE_MOVE/NI_MOUSE_BUTTON codes and x/y/extra fields in ni_event.
+ * Provide these as zero-cost aliases and optional struct fields that default to 0.
+ */
+#ifndef NI_EV_MOUSE
+#  define NI_EV_MOUSE 0x2FF
+#endif
+#ifndef NI_MOUSE_MOVE
+#  define NI_MOUSE_MOVE 1
+#endif
+#ifndef NI_MOUSE_BUTTON
+#  define NI_MOUSE_BUTTON 2
+#endif
 
 /* Public event structure */
 struct ni_event {
@@ -849,6 +862,10 @@ struct ni_event {
 	int code;          /* NI_KEY_* (for EV_KEY) or platform native for other types */
 	int value;         /* 1=down, 0=up, or axis delta/value */
 	long long timestamp_ns; /* kernel/device-provided timestamp if available; otherwise CLOCK_MONOTONIC */
+	/* Optional compatibility fields for NI_EV_MOUSE synthetic events */
+	int x;             /* relative X for NI_MOUSE_MOVE (if provided) */
+	int y;             /* relative Y for NI_MOUSE_MOVE (if provided) */
+	int extra;         /* button id or extra data for NI_MOUSE_BUTTON, etc. */
 };
 
 /* Device info for filtering */

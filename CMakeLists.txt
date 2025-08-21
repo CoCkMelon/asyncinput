@@ -17,7 +17,8 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 # Select backend sources per-platform
 if(WIN32)
     set(ASYNCINPUT_SRC src/libasyncinput_win.c)
-elif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+elseif(UNIX AND (CMAKE_SYSTEM_NAME STREQUAL "Linux" OR EXISTS "/usr/include/linux/input.h"))
+    # Use Linux/posix backend when on Linux or when kernel input headers are present
     set(ASYNCINPUT_SRC src/libasyncinput_posix.c)
 else()
     # Unsupported platforms: require SDL3 and use SDL-based backend. Fail to configure if missing.

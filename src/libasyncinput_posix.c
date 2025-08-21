@@ -167,7 +167,7 @@ static void *mice_worker(void *arg)
 	unsigned char buf[8];
 	unsigned char pkt[4];
 	int have = 0;
-	while (!g.stop && g.mice_enabled) {
+while (!g.stop && g.mice_enabled) {
 		ssize_t r = read(g.mice_fd, buf, sizeof(buf));
 		if (r <= 0) {
 			if (errno == EAGAIN || errno == EWOULDBLOCK) { usleep(1000); continue; }
@@ -186,9 +186,18 @@ static void *mice_worker(void *arg)
 				ev.type = NI_EV_KEY; ev.code = NI_BTN_LEFT; ev.value = (btn & 0x1) ? 1 : 0; emit_or_queue(&ev);
 				ev.code = NI_BTN_RIGHT; ev.value = (btn & 0x2) ? 1 : 0; emit_or_queue(&ev);
 				ev.code = NI_BTN_MIDDLE; ev.value = (btn & 0x4) ? 1 : 0; emit_or_queue(&ev);
+				/* Also emit a unified NI_EV_MOUSE button event for compatibility */
+				if (btn & 0x1) { struct ni_event mev = {0}; mev.device_id = ev.device_id; mev.timestamp_ns = ev.timestamp_ns; mev.type = NI_EV_MOUSE; mev.code = NI_MOUSE_BUTTON; mev.extra = 1; mev.value = 1; emit_or_queue(&mev); }
+				if (!(btn & 0x1)) { struct ni_event mev = {0}; mev.device_id = ev.device_id; mev.timestamp_ns = ev.timestamp_ns; mev.type = NI_EV_MOUSE; mev.code = NI_MOUSE_BUTTON; mev.extra = 1; mev.value = 0; emit_or_queue(&mev); }
+				if (btn & 0x2) { struct ni_event mev = {0}; mev.device_id = ev.device_id; mev.timestamp_ns = ev.timestamp_ns; mev.type = NI_EV_MOUSE; mev.code = NI_MOUSE_BUTTON; mev.extra = 2; mev.value = 1; emit_or_queue(&mev); }
+				if (!(btn & 0x2)) { struct ni_event mev = {0}; mev.device_id = ev.device_id; mev.timestamp_ns = ev.timestamp_ns; mev.type = NI_EV_MOUSE; mev.code = NI_MOUSE_BUTTON; mev.extra = 2; mev.value = 0; emit_or_queue(&mev); }
+				if (btn & 0x4) { struct ni_event mev = {0}; mev.device_id = ev.device_id; mev.timestamp_ns = ev.timestamp_ns; mev.type = NI_EV_MOUSE; mev.code = NI_MOUSE_BUTTON; mev.extra = 3; mev.value = 1; emit_or_queue(&mev); }
+				if (!(btn & 0x4)) { struct ni_event mev = {0}; mev.device_id = ev.device_id; mev.timestamp_ns = ev.timestamp_ns; mev.type = NI_EV_MOUSE; mev.code = NI_MOUSE_BUTTON; mev.extra = 3; mev.value = 0; emit_or_queue(&mev); }
 				/* rel moves: dy inverted to match evdev coords */
 				ev.type = NI_EV_REL; ev.code = NI_REL_X; ev.value = (int)dx; emit_or_queue(&ev);
 				ev.type = NI_EV_REL; ev.code = NI_REL_Y; ev.value = -(int)dy; emit_or_queue(&ev);
+				/* And a unified NI_EV_MOUSE move event */
+				if (dx || dy) { struct ni_event mev = {0}; mev.device_id = ev.device_id; mev.timestamp_ns = ev.timestamp_ns; mev.type = NI_EV_MOUSE; mev.code = NI_MOUSE_MOVE; mev.x = (int)dx; mev.y = -(int)dy; emit_or_queue(&mev); }
 				if (have >= 4) {
 					signed char dz = (signed char)pkt[3];
 					ev.type = NI_EV_REL; ev.code = NI_REL_WHEEL; ev.value = (int)dz; emit_or_queue(&ev);
