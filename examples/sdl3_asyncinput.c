@@ -128,7 +128,7 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
 
     SDL_SetAppMetadata("AsyncInput SDL3 WASD", "1.0", "com.example.asyncinput-sdl3-wasd");
 
-    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
+    if (!SDL_Init(SDL_INIT_VIDEO)) {
         SDL_Log("Couldn't initialize SDL: %s", SDL_GetError());
         return SDL_APP_FAILURE;
     }

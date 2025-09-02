@@ -14,7 +14,7 @@
 static struct {
     int initialized;
     SDL_Thread *thread;
-    SDL_atomic_t stop;
+    SDL_AtomicInt stop;
     SDL_Mutex *q_lock;
     int head, tail;
     struct ni_event q[1024];
@@ -41,14 +41,14 @@ static int sdl_worker(void *data)
     /* Create a hidden window to ensure input focus model exists */
     SDL_Window *win = SDL_CreateWindow("asyncinput", 1, 1, SDL_WINDOW_HIDDEN);
     if (!win) return -1;
-    SDL_SetEventEnabled(SDL_EVENT_MOUSE_MOTION, SDL_TRUE);
-    SDL_SetEventEnabled(SDL_EVENT_MOUSE_WHEEL, SDL_TRUE);
-    SDL_SetEventEnabled(SDL_EVENT_MOUSE_BUTTON_DOWN, SDL_TRUE);
-    SDL_SetEventEnabled(SDL_EVENT_MOUSE_BUTTON_UP, SDL_TRUE);
-    SDL_SetEventEnabled(SDL_EVENT_KEY_DOWN, SDL_TRUE);
-    SDL_SetEventEnabled(SDL_EVENT_KEY_UP, SDL_TRUE);
+    SDL_SetEventEnabled(SDL_EVENT_MOUSE_MOTION, true);
+    SDL_SetEventEnabled(SDL_EVENT_MOUSE_WHEEL, true);
+    SDL_SetEventEnabled(SDL_EVENT_MOUSE_BUTTON_DOWN, true);
+    SDL_SetEventEnabled(SDL_EVENT_MOUSE_BUTTON_UP, true);
+    SDL_SetEventEnabled(SDL_EVENT_KEY_DOWN, true);
+    SDL_SetEventEnabled(SDL_EVENT_KEY_UP, true);
 
-    while (!SDL_AtomicGet(&g.stop)) {
+    while (!SDL_GetAtomicInt(&g.stop)) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             struct ni_event ev = {0};
@@ -76,7 +76,7 @@ static int sdl_worker(void *data)
                 default: break;
             }
         }
-        SDL_Delay(1);
+        SDL_DelayNS(1000000); /* 1 ms */
     }
     SDL_DestroyWindow(win);
     return 0;
@@ -86,8 +86,8 @@ int ni_init(int flags)
 {
     if (flags != 0) return -1;
     if (g.initialized) return 0;
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_TIMER) != 0) return -1;
-    SDL_AtomicSet(&g.stop, 0);
+    if (SDL_Init(SDL_INIT_VIDEO) != 0) return -1;
+    SDL_SetAtomicInt(&g.stop, 0);
     g.q_lock = SDL_CreateMutex();
     g.head = g.tail = 0;
     g.thread = SDL_CreateThread(sdl_worker, "ai_worker", NULL);
@@ -113,7 +113,7 @@ int ni_poll(struct ni_event *evts, int max_events)
 int ni_shutdown(void)
 {
     if (!g.initialized) return 0;
-    SDL_AtomicSet(&g.stop, 1);
+    SDL_SetAtomicInt(&g.stop, 1);
     SDL_WaitThread(g.thread, NULL);
     SDL_DestroyMutex(g.q_lock);
     SDL_Quit();
